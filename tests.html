@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="sv">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bågskytte – test</title>
+  <style>
+    body { font-family: -apple-system, system-ui, sans-serif; margin: 16px; line-height: 1.4; }
+    h1 { font-size: 22px; }
+    #summary { font-size: 18px; font-weight: 700; }
+    .pass { color: #066b00; }
+    .fail { color: #b0001a; font-weight: 700; }
+    li { margin: 2px 0; }
+    li pre { margin: 2px 0 6px; white-space: pre-wrap; font-size: 13px; }
+    h2 { font-size: 17px; margin: 18px 0 4px; }
+  </style>
+</head>
+<body>
+  <h1>Bågskytte – automatiska test</h1>
+  <p>Testerna använder en separat databas (<code>bagskytte-test</code>) och rör inte appens riktiga data.</p>
+  <p id="summary">Kör…</p>
+  <div id="results"></div>
+
+  <svg width="0" height="0" style="position:absolute"><defs><g id="target-face"></g></defs></svg>
+  <div id="app" hidden></div>
+  <div id="modal-root"></div>
+  <div id="toast"></div>
+
+  <script>window.BAGE_TEST = true;</script>
+  <script src="app.js"></script>
+  <script>
+  (async () => {
+    const B = window.Bage;
+    const { Store, DB } = B;
+    const results = [];
+    let group = 'Allmänt';
+    const out = document.getElementById('results');
+
+    function section(name) { group = name; }
+    async function test(name, fn) {
+      try {
+        await fn();
+        results.push({ group, name, ok: true });
+      } catch (e) {
+        results.push({ group, name, ok: false, err: e && e.stack ? e.stack : String(e) });
+      }
+    }
+    function eq(actual, expected, msg) {
+      const a = JSON.stringify(actual), b = JSON.stringify(expected);
+      if (a !== b) throw new Error(`${msg || 'Värden skiljer sig'}\n  fick:     ${a}\n  förväntat: ${b}`);
+    }
+    function ok(cond, msg) { if (!cond) throw new Error(msg || 'Villkoret är falskt'); }
+
+    // Punkt på x-axeln som ger angiven poäng ('X', 10…1 eller 'M' för miss).
+    function dFor(s) {
+      if (s === 'X') return 0;
+      if (s === 'M') return 31;
+      if (s === 10) return 2.5;
+      return (11 - s) * 3 - 1.5;
+    }
+    const arrowOf = (s) => B.makeArrow(dFor(s), 0);
+    async function place(s) { return Store.placeArrow(dFor(s), 0); }
+    async function reload() {
+      await DB.close();
+      Store.state = { rounds: [], arrows: [], sets: [], comparisons: [], activeSession: null };
+      await Store.init();
+    }
+    async function freshDb() {
+      await DB.destroy();
+      await Store.init();
+    }
+    const fromDb = (store) => DB.getAll(store);
+
+    DB.configure('bagskytte-test');
+    await freshDb();
+
+    // ---------------------------------------------------------------
+    section('Poängfunktion');
+    const cases = [[0, 'X'], [1.5, 'X'], [1.51, '10'], [3, '10'], [3.01, '9'], [6, '9'],
+      [18, '5'], [24, '3'], [30, '1'], [30.01, '–']];
+    for (const [d, label] of cases) {
+      await test(`d = ${String(d).replace('.', ',')} → ${label}`, () => eq(B.scoreLabel(B.scoreForDistance(d)), label));
+    }
+    await test('X räknas som 10, miss som 0', () => {
+      eq(B.scoreForDistance(0), { score: 10, isX: true, isMiss: false });
+      eq(B.scoreForDistance(31), { score: 0, isX: false, isMiss: true });
+    });
+    await test('Flyttalsfel på en gräns ger den högre poängen', () => {
+      const a = 0.7;
+      eq(B.scoreAt(3 * Math.cos(a), 3 * Math.sin(a)).score, 10);
+      eq(B.scoreAt(6 * Math.cos(a), -6 * Math.sin(a)).score, 9);
+      eq(B.scoreForDistance(0.1 + 0.2 + 2.7).score, 10);
+    });
+    await test('Alla zongränser 3…30 ger högre poäng, strax utanför ger lägre', () => {
+      for (let k = 1; k <= 10; k++) {
+        eq(B.scoreForDistance(3 * k).score, 11 - k, `d=${3 * k}`);
+        if (k < 10) eq(B.scoreForDistance(3 * k + 0.001).score, 10 - k, `d=${3 * k}+`);
+      }
+    });
+    await test('Punkt utanför ytan låses vid kanten och blir miss', () => {
+      const a = B.makeArrow(50, -40);
+      eq([a.x, a.y, a.isMiss, a.score], [33, -33, true, 0]);
+    });
+
+    // ---------------------------------------------------------------
+    section('Kolumnerna Rad, Serie och Totalt');
+    await test('Serie 1: Rad och Serie, Totalt tom', () => {
+      const arrows = ['X', 10, 9, 8, 7, 'M', 5].map(arrowOf);
+      const rows = B.seriesTable(arrows, null);
+      eq(rows.length, 10);
+      eq([rows[0].rowSum, rows[0].seriesSum, rows[0].total], [29, 29, null]);
+      eq([rows[1].rowSum, rows[1].seriesSum, rows[1].total], [15, 44, null]);
+      eq([rows[2].rowSum, rows[2].seriesSum, rows[2].total], [5, 49, null], 'påbörjad rad summeras');
+      eq([rows[3].rowSum, rows[3].seriesSum, rows[3].total], [null, null, null], 'tom rad');
+    });
+    await test('Serie 2: Totalt = ackumulerat + hela serie 1', () => {
+      const s1 = Array(30).fill(9).map(arrowOf);
+      const prev = B.seriesScore({ arrows: s1 });
+      eq(prev, 270);
+      const rows = B.seriesTable([10, 10, 10, 'X', 1, 2].map(arrowOf), prev);
+      eq([rows[0].rowSum, rows[0].seriesSum, rows[0].total], [30, 30, 300]);
+      eq([rows[1].rowSum, rows[1].seriesSum, rows[1].total], [13, 43, 313]);
+      eq(rows[2].total, null);
+    });
+    await test('Full serie: sista radens Serie = seriens summa', () => {
+      const arrows = Array.from({ length: 30 }, (_, i) => arrowOf((i % 10) + 1));
+      const rows = B.seriesTable(arrows, null);
+      eq(rows[9].seriesSum, B.seriesScore({ arrows }));
+      eq(rows[9].seriesSum, 165);
+    });
+    await test('Kolumnrubriken heter Poäng (inte Rad)', () => {
+      const heads = [...B.seriesGrid([], null, 0, true).querySelectorAll('.gh')].map((e) => e.textContent);
+      eq(heads, ['Pil 1', 'Pil 2', 'Pil 3', 'Poäng', 'Serie', 'Totalt']);
+    });
+    await test('Antal 10:or inkluderar X', () => {
+      const r = { series: [{ arrows: ['X', 'X', 10, 9, 'M'].map(arrowOf) }] };
+      eq(B.roundSummary(r), { score: 39, tens: 3, xs: 2, seriesScores: [39] });
+    });
+
+    // ---------------------------------------------------------------
+    section('Flödet i Räkna serie');
+    await test('Tomt namn ger ”Omgång” + datum', async () => {
+      const s = await Store.startRound('   ');
+      ok(/^Omgång \d{4}-\d{2}-\d{2}$/.test(s.name), s.name);
+      await Store.discardSession();
+    });
+    await test('Pil 1–29 sparas utan omgång, pil 30 sparar omgången och frågar om serie 2', async () => {
+      await Store.startRound('Test 1');
+      for (let i = 0; i < 29; i++) eq((await place(9)).event, 'arrow');
+      eq(Store.state.rounds.length, 0);
+      const res = await place(10);
+      eq(res.event, 'series1Done');
+      eq(Store.state.activeSession.phase, 'askSeries2');
+      const saved = await fromDb('rounds');
+      eq(saved.length, 1);
+      eq(saved[0].series.length, 1);
+      eq(saved[0].series[0].arrows.length, 30);
+      eq(saved[0].name, 'Test 1');
+      eq(B.roundSummary(saved[0]).score, 29 * 9 + 10);
+      eq(await Store.placeArrow(0, 0), null, 'inga pilar medan dialogen visas');
+    });
+    await test('Nästa: tom serie 2, serie 1 räknas in i Totalt, pil 30 sparar omgången', async () => {
+      await Store.continueSeries2();
+      const s = Store.state.activeSession;
+      eq(s.series.length, 2);
+      eq(s.series[1].arrows.length, 0);
+      for (let i = 0; i < 29; i++) await place(8);
+      const prev = B.seriesScore(s.series[0]);
+      eq(B.seriesTable(s.series[1].arrows, prev)[0].total, prev + 24);
+      const res = await place('X');
+      eq(res.event, 'roundDone');
+      const saved = (await fromDb('rounds')).find((r) => r.id === res.roundId);
+      eq(saved.series.length, 2);
+      eq(saved.series[1].arrows.length, 30);
+      eq(B.roundSummary(saved), { score: 271 + 29 * 8 + 10, tens: 2, xs: 1, seriesScores: [271, 242] });
+    });
+    await test('Efter serie 2 ligger omgången kvar för granskning tills Avsluta', async () => {
+      const s = Store.state.activeSession;
+      eq(s.phase, 'roundDone');
+      eq((await DB.get('meta', 'activeSession')).value.phase, 'roundDone');
+      eq(await Store.placeArrow(0, 0), null, 'inga fler pilar');
+      await reload();
+      eq(Store.state.activeSession.phase, 'roundDone', 'granskningsläget finns kvar efter omladdning');
+      await Store.finishRound();
+      eq(Store.state.activeSession, null);
+      eq(await DB.get('meta', 'activeSession'), undefined);
+      eq(Store.state.rounds.find((r) => r.id === s.roundId).series.length, 2);
+    });
+    await test('Ångra efter serie 2 tar bort pil 30 och sparar omgången med bara serie 1', async () => {
+      await Store.startRound('Ångra S2');
+      for (let i = 0; i < 30; i++) await place(9);
+      await Store.continueSeries2();
+      for (let i = 0; i < 30; i++) await place(5);
+      const id = Store.state.activeSession.roundId;
+      await Store.undo();
+      eq(Store.state.activeSession.phase, 'shooting');
+      eq(Store.state.activeSession.series[1].arrows.length, 29);
+      eq((await DB.get('rounds', id)).series.length, 1);
+      await place(5);
+      eq((await DB.get('rounds', id)).series.length, 2);
+      await Store.finishRound();
+    });
+    await test('Avsluta efter serie 1: omgången finns kvar med en serie och sessionen stängs', async () => {
+      await Store.startRound('Test 2');
+      for (let i = 0; i < 30; i++) await place(7);
+      await Store.finishRound();
+      eq(Store.state.activeSession, null);
+      const saved = (await fromDb('rounds')).find((r) => r.name === 'Test 2');
+      eq(saved.series.length, 1);
+      eq(B.roundSummary(saved).score, 210);
+    });
+    await test('Spara mitt i en serie: allt finns kvar och kan återupptas', async () => {
+      await Store.startRound('Spara');
+      await place(10); await place(4);
+      await reload();
+      const s = Store.state.activeSession;
+      eq([s.name, s.phase, s.series[0].arrows.map(B.scoreLabel)], ['Spara', 'shooting', ['10', '4']]);
+      await place(3);
+      eq(Store.state.activeSession.series[0].arrows.length, 3);
+      await Store.discardSession();
+    });
+    await test('Byt namn på sparad omgång', async () => {
+      const r = Store.state.rounds.find((x) => x.name === 'Test 2');
+      await Store.renameRound(r.id, 'Nytt namn');
+      eq((await DB.get('rounds', r.id)).name, 'Nytt namn');
+      await Store.renameRound(r.id, '');
+      eq((await DB.get('rounds', r.id)).name, B.defaultRoundName(r.createdAt), 'tomt namn ger standardnamn');
+    });
+
+    // ---------------------------------------------------------------
+    section('Ångra');
+    await test('Ångra mitt i en rad tar bort senaste pilen', async () => {
+      await freshDb();
+      await Store.startRound('Ångra');
+      eq(Store.canUndo(), false);
+      eq(await Store.undo(), false);
+      await place(9); await place(5);
+      eq(await Store.undo(), true);
+      const arrows = Store.state.activeSession.series[0].arrows;
+      eq(arrows.map((a) => a.score), [9]);
+      eq((await DB.get('meta', 'activeSession')).value.series[0].arrows.length, 1, 'ångrat sparas direkt');
+    });
+    await test('”Ångra sista pilen” i dialogen tar bort pil 30 och den sparade omgången', async () => {
+      for (let i = 0; i < 29; i++) await place(9);
+      eq(Store.state.activeSession.phase, 'askSeries2');
+      eq((await fromDb('rounds')).length, 1);
+      await Store.undo();
+      eq(Store.state.activeSession.phase, 'shooting');
+      eq(Store.state.activeSession.series[0].arrows.length, 29);
+      eq((await fromDb('rounds')).length, 0);
+    });
+    await test('Ångra i tom serie 2 tar bort pil 30 i serie 1', async () => {
+      await place(9);
+      await Store.continueSeries2();
+      await Store.undo();
+      const s = Store.state.activeSession;
+      eq(s.series.length, 1);
+      eq(s.series[0].arrows.length, 29);
+      eq((await fromDb('rounds')).length, 0);
+    });
+    await test('Ångra i serie 2 påverkar inte sparade serie 1', async () => {
+      await place(9);
+      await Store.continueSeries2();
+      await place(3); await place(4);
+      await Store.undo();
+      eq(Store.state.activeSession.series[1].arrows.map((a) => a.score), [3]);
+      eq((await fromDb('rounds'))[0].series.length, 1);
+      await Store.discardSession();
+      eq((await fromDb('rounds')).length, 1, 'serie 1 finns kvar efter att pågående slängts');
+    });
+
+    // ---------------------------------------------------------------
+    section('Återupptagning efter omladdning');
+    await test('Pågående omgång finns kvar med alla pilar efter omladdning', async () => {
+      await freshDb();
+      await Store.startRound('Omladdning');
+      const pts = [[1.2, -0.4], [-7.5, 3.1], [20, 20], [0.3, 12.9]];
+      for (const [x, y] of pts) await Store.placeArrow(x, y);
+      await reload();
+      const s = Store.state.activeSession;
+      eq(s.name, 'Omladdning');
+      eq(s.series[0].arrows.map((a) => [a.x, a.y]), pts);
+      eq(s.series[0].arrows.map(B.scoreLabel), ['X', '8', '1', '6']);
+    });
+    await test('Dialogen ”Skjuta serie 2?” finns kvar efter omladdning', async () => {
+      for (let i = 0; i < 26; i++) await place(10);
+      await reload();
+      eq(Store.state.activeSession.phase, 'askSeries2');
+      eq(Store.state.rounds.length, 1);
+      await Store.continueSeries2();
+      await place(6);
+      await reload();
+      eq(Store.state.activeSession.series[1].arrows.length, 1);
+      await Store.discardSession();
+    });
+    await test('Pågående jämförelse finns kvar efter omladdning', async () => {
+      const set = await Store.createSet(['4', '2']);
+      await Store.startComparison(set.id);
+      await place(9); await place(8); await place(7);
+      await reload();
+      const s = Store.state.activeSession;
+      eq(s.kind, 'comparison');
+      eq(s.shots.map((x) => [x.arrowNumber, x.round, x.score]), [[2, 1, 9], [4, 1, 8], [2, 2, 7]]);
+      await Store.discardSession();
+    });
+
+    // ---------------------------------------------------------------
+    section('Set och skjutordning');
+    await test('Pilar skjuts i stigande nummerordning och nästa varv börjar på lägsta', async () => {
+      await freshDb();
+      const set = await Store.createSet(['5', '2', '9']);
+      await Store.startComparison(set.id);
+      eq(Store.state.activeSession.arrows.map((a) => a.number), [2, 5, 9]);
+      for (let i = 0; i < 7; i++) await place(10);
+      const shots = Store.state.activeSession.shots;
+      eq(shots.map((s) => s.arrowNumber), [2, 5, 9, 2, 5, 9, 2]);
+      eq(shots.map((s) => s.round), [1, 1, 1, 2, 2, 2, 3]);
+      eq(B.nextArrowIndex(7, 3), 1);
+      eq(B.varvOf(6, 3), 3);
+      await Store.discardSession();
+    });
+    await test('Validering: dubbletter, tomma fält, ogiltiga nummer och antal', () => {
+      ok(B.parseSetNumbers(['1', '2', '1']).error.includes('finns redan'));
+      ok(B.parseSetNumbers(['1', '']).error);
+      ok(B.parseSetNumbers(['1', 'a']).error);
+      ok(B.parseSetNumbers(['0']).error);
+      ok(B.parseSetNumbers(['1000']).error);
+      ok(B.parseSetNumbers([]).error);
+      ok(B.parseSetNumbers(Array.from({ length: 13 }, (_, i) => String(i + 1))).error);
+      eq(B.parseSetNumbers(Array.from({ length: 12 }, (_, i) => String(i + 1))).numbers.length, 12);
+      eq(B.parseSetNumbers([' 7 ', '3']).numbers, [7, 3]);
+    });
+    await test('Dubblett i set avvisas av createSet och skapar inget', async () => {
+      const before = Store.state.sets.length;
+      let threw = false;
+      try { await Store.createSet(['3', '3']); } catch (e) { threw = true; }
+      ok(threw);
+      eq(Store.state.sets.length, before);
+    });
+    await test('Samma nummer i flera set är samma pil', async () => {
+      const a = await Store.createSet(['1', '2']);
+      const b = await Store.createSet(['2', '3']);
+      eq(a.arrowIds[1], b.arrowIds[0]);
+      eq(Store.activeArrows().map((x) => x.number), [1, 2, 3, 5, 9]);
+    });
+    await test('Set kan raderas utan att pilarna försvinner', async () => {
+      const s = await Store.createSet(['11']);
+      await Store.deleteSet(s.id);
+      ok(!(await fromDb('sets')).some((x) => x.id === s.id));
+      ok(Store.activeArrows().some((x) => x.number === 11));
+    });
+
+    // ---------------------------------------------------------------
+    section('Borttagning av pil');
+    await test('Pil tas bort ur registret och alla set, tomt set raderas, jämförelser behåller skott', async () => {
+      await freshDb();
+      const setA = await Store.createSet(['1', '2']);
+      const setB = await Store.createSet(['2']);
+      const id2 = setB.arrowIds[0];
+      await Store.startComparison(setA.id);
+      await place(10); await place(9); await place(8);
+      const compId = await Store.finishComparison();
+      await Store.deleteArrow(id2);
+      eq(Store.activeArrows().map((a) => a.number), [1]);
+      eq((await DB.get('arrows', id2)).deleted, true);
+      eq((await DB.get('sets', setA.id)).arrowIds, [setA.arrowIds[0]]);
+      eq(await DB.get('sets', setB.id), undefined, 'tomt set raderat');
+      const comp = await DB.get('comparisons', compId);
+      eq(comp.shots.filter((s) => s.arrowId === id2).map((s) => s.score), [9]);
+      eq(B.comparisonStats(comp, Store.state.arrows).map((s) => s.number), [1, 2], 'numret finns kvar i jämförelsen');
+    });
+    await test('Samma nummer igen blir en ny pil med egen statistik', async () => {
+      const old = Store.state.arrows.find((a) => a.number === 2 && a.deleted);
+      const s = await Store.createSet(['2']);
+      const fresh = s.arrowIds[0];
+      ok(fresh !== old.id);
+      eq(B.arrowShotsAcross(fresh, Store.state.comparisons).length, 0);
+      eq(B.arrowShotsAcross(old.id, Store.state.comparisons).length, 1);
+    });
+
+    // ---------------------------------------------------------------
+    section('Statistik och avslut');
+    await test('shotStats: poäng, antal, snitt, 10:or och X', () => {
+      const st = B.shotStats(['X', 10, 9, 'M'].map(arrowOf));
+      eq(st, { scores: ['X', '10', '9', '–'], count: 4, sum: 29, avg: 7.25, tens: 2, xs: 1 });
+      eq(B.shotStats([]).avg, null);
+    });
+    await test('Avslut mitt i varv sparar alla skott, statistik per pil stämmer', async () => {
+      await freshDb();
+      const set = await Store.createSet(['3', '1', '2']);
+      await Store.startComparison(set.id);
+      for (const s of ['X', 9, 8, 10, 'M']) await place(s); // pil 1,2,3,1,2
+      const id = await Store.finishComparison();
+      ok(id);
+      eq(Store.state.activeSession, null);
+      const c = await DB.get('comparisons', id);
+      eq(c.shots.length, 5);
+      eq(Object.keys(c).sort(), ['arrowIds', 'createdAt', 'id', 'shots']);
+      eq(Object.keys(c.shots[0]).sort(), ['arrowId', 'arrowNumber', 'isMiss', 'isX', 'round', 'score', 'x', 'y']);
+      const st = B.comparisonStats(c, Store.state.arrows);
+      eq(st.map((s) => [s.number, s.scores, s.count, s.avg, s.tens, s.xs]), [
+        [1, ['X', '10'], 2, 10, 2, 1],
+        [2, ['9', '–'], 2, 4.5, 0, 0],
+        [3, ['8'], 1, 8, 0, 0]
+      ]);
+    });
+    await test('Statistik per pil över flera jämförelser', async () => {
+      const set = Store.state.sets[0];
+      await Store.startComparison(set.id);
+      await place(5);
+      await Store.finishComparison();
+      const one = Store.state.arrows.find((a) => a.number === 1);
+      const shots = B.arrowShotsAcross(one.id, Store.state.comparisons);
+      eq(shots.map(B.scoreLabel), ['X', '10', '5']);
+      eq(B.shotStats(shots).tens, 2);
+    });
+    await test('Tom jämförelse sparas inte', async () => {
+      const before = Store.state.comparisons.length;
+      await Store.startComparison(Store.state.sets[0].id);
+      eq(await Store.finishComparison(), null);
+      eq(Store.state.comparisons.length, before);
+      eq(Store.state.activeSession, null);
+    });
+    await test('Ångra i jämförelse tar bort senaste skottet', async () => {
+      await Store.startComparison(Store.state.sets[0].id);
+      await place(9); await place(8);
+      await Store.undo();
+      eq(Store.state.activeSession.shots.map((s) => s.arrowNumber), [1]);
+      await Store.discardSession();
+    });
+
+    await test('Översikt över tävlingsomgångar: snitt per omgång, per pil och totalt', () => {
+      const mk = (id, t, scores) => ({ id, name: id, createdAt: t, series: scores.map((sc) => ({ arrows: sc.map(arrowOf) })) });
+      const o = B.roundsOverview([
+        mk('b', 2, [Array(30).fill(9), Array(30).fill(8)]),
+        mk('a', 1, [[...Array(29).fill(10), 'X']])
+      ]);
+      eq(o.rounds.map((r) => [r.id, r.score, r.arrows, r.avgArrow]), [['a', 300, 30, 10], ['b', 510, 60, 8.5]]);
+      eq([o.count, o.totalScore, o.totalArrows, o.avgRound, o.best, o.tens, o.xs, o.mixedSeries], [2, 810, 90, 405, 510, 30, 1, true]);
+      eq(o.avgArrow, 9);
+      eq(B.roundsOverview([]).avgRound, null);
+    });
+    await test('Diagrammets skalsteg', () => {
+      eq(B.niceTicks(250, 290, 4), [250, 260, 270, 280, 290]);
+      eq(B.niceTicks(8.1, 9.3, 4), [8, 8.5, 9, 9.5]);
+      eq(B.niceTicks(200, 200, 4), [199, 199.5, 200, 200.5, 201]);
+    });
+
+    // ---------------------------------------------------------------
+    section('Export och import');
+    await test('Export → radera allt → import ger samma data', async () => {
+      await Store.startRound('Export');
+      for (let i = 0; i < 30; i++) await place(i % 2 ? 'X' : 6);
+      await Store.finishRound();
+      await Store.startRound('Pågår');
+      await place(4);
+      const json = JSON.stringify(Store.exportData());
+      const snapshot = JSON.stringify(Store.state);
+      await freshDb();
+      eq(Store.state.rounds.length, 0);
+      await Store.importData(JSON.parse(json));
+      const norm = (st) => {
+        const o = JSON.parse(typeof st === 'string' ? st : JSON.stringify(st));
+        for (const k of ['rounds', 'arrows', 'sets', 'comparisons']) o[k].sort((a, b) => a.id.localeCompare(b.id));
+        return o;
+      };
+      eq(norm(Store.state), norm(snapshot));
+      await reload();
+      eq(norm(Store.state), norm(snapshot), 'även efter omladdning');
+      eq(Store.state.activeSession.name, 'Pågår');
+    });
+    await test('Import ersätter befintlig data', async () => {
+      const backup = Store.exportData();
+      backup.data.rounds = [];
+      backup.data.activeSession = null;
+      await Store.importData(backup);
+      eq(Store.state.rounds.length, 0);
+      eq(Store.state.activeSession, null);
+      eq((await fromDb('rounds')).length, 0);
+    });
+    await test('Felaktiga filer avvisas och ändrar inget', async () => {
+      const before = JSON.stringify(Store.state);
+      for (const bad of [null, {}, { format: 'annat' }, { format: 'bagskytte-backup', data: { rounds: [] } },
+        { format: 'bagskytte-backup', data: { rounds: [{ id: 'x', series: [{ arrows: [{ x: 'a' }] }] }], arrows: [], sets: [], comparisons: [] } }]) {
+        ok(B.validateBackup(bad), JSON.stringify(bad));
+        let threw = false;
+        try { await Store.importData(bad); } catch (e) { threw = true; }
+        ok(threw);
+      }
+      eq(JSON.stringify(Store.state), before);
+    });
+
+    // ---------------------------------------------------------------
+    section('Måltavla och konstanter');
+    await test('Zoomkonstanter ger 4× förstoring', () => {
+      eq(B.ZOOM_WINDOW_FRACTION, 1 / 2);
+      eq(B.ZOOM_VIEW_FRACTION, 1 / 8);
+      eq(B.ZOOM_WINDOW_FRACTION / B.ZOOM_VIEW_FRACTION, 4);
+    });
+    await test('Tavlan har zoner, linjer och kors enligt specifikationen', () => {
+      const g = document.getElementById('target-face');
+      B.buildTargetFace(g);
+      const circles = [...g.querySelectorAll('circle')];
+      const fills = circles.filter((c) => c.getAttribute('fill') !== 'none')
+        .map((c) => [+c.getAttribute('r'), c.getAttribute('fill')]);
+      eq(fills, [[30, '#FFFFFF'], [24, '#231F20'], [18, '#4FADDE'], [12, '#DC4A4A'], [6, '#F7E04B']]);
+      const lines = circles.filter((c) => c.getAttribute('fill') === 'none')
+        .map((c) => [Math.round((+c.getAttribute('r') + 0.1) * 10) / 10, c.getAttribute('stroke'), +c.getAttribute('stroke-width')]);
+      const black = lines.filter((l) => l[1] === '#231F20').map((l) => l[0]);
+      eq(black, [1.5, 3, 6, 9, 12, 15, 27, 30]);
+      eq(lines.filter((l) => l[1] === '#FFFFFF').map((l) => l[0]), [21]);
+      ok(lines.every((l) => l[2] === 0.2));
+      ok(!lines.some((l) => l[0] === 18 || l[0] === 24), 'ingen linje vid 18 och 24');
+      ok(g.querySelector('path').getAttribute('d') === 'M-0.2 0H0.2M0 -0.2V0.2');
+    });
+
+    await DB.destroy();
+
+    // ---------------------------------------------------------------
+    const failed = results.filter((r) => !r.ok);
+    const summary = document.getElementById('summary');
+    summary.textContent = failed.length
+      ? `${failed.length} av ${results.length} test misslyckades.`
+      : `Alla ${results.length} test godkända.`;
+    summary.className = failed.length ? 'fail' : 'pass';
+    let last = null, ol = null;
+    for (const r of results) {
+      if (r.group !== last) {
+        out.append(Object.assign(document.createElement('h2'), { textContent: r.group }));
+        ol = out.appendChild(document.createElement('ol'));
+        last = r.group;
+      }
+      const li = document.createElement('li');
+      li.className = r.ok ? 'pass' : 'fail';
+      li.textContent = (r.ok ? '✓ ' : '✗ ') + r.name;
+      if (!r.ok) li.append(Object.assign(document.createElement('pre'), { textContent: r.err }));
+      ol.append(li);
+    }
+    window.__testResults = { total: results.length, failed: failed.map((f) => ({ group: f.group, name: f.name, err: f.err })) };
+  })();
+  </script>
+</body>
+</html>
