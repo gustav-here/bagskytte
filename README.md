@@ -86,15 +86,16 @@ Där specifikationen var oklar har jag gjort följande val:
 - **Koordinater**: cm med centrum i (0, 0). y växer **nedåt**, som i SVG. Koordinaterna avrundas till 0,01 mm och poängen räknas på det avrundade värdet.
 - **Tidsstämplar** (`createdAt`) sparas som millisekunder sedan 1970. Standardnamnet är ”Omgång ÅÅÅÅ-MM-DD”.
 - **När omgången sparas**: posten i `rounds` skapas när serie 1 är fullskjuten och innehåller bara fulla serier. Under serie 2 visas omgången därför med serie 1 i listan. Om pågående serie 2 slängs finns omgången kvar med en serie.
-- **Spara**: knappen Spara uppe till vänster under en pågående omgång tar dig till startsidan. Allt är redan sparat efter varje pil, och omgången återupptas med ”Fortsätt pågående”.
-- **Efter pil 30** (både serie 1 och serie 2) visas ingen dialog direkt. Tavlan visar alla pilar i serien. Dialogen öppnas när du trycker på siffrorna (tabellen) eller på knappen **Gå vidare**. Dialogen kan stängas med X och öppnas igen på samma sätt.
+- **Tillbaka och Spara**: uppe till vänster under en pågående omgång finns **‹** (tillbaka) och **Spara**. Båda tar dig till startsidan, och Spara bekräftar dessutom att omgången är sparad. Allt är redan sparat efter varje pil, och omgången återupptas med ”Fortsätt pågående”.
+- **Efter pil 30** (både serie 1 och serie 2) visas ingen dialog direkt. Tavlan visar alla pilar i serien. Dialogen öppnas när du trycker på siffrorna (tabellen) eller på knappen **Gå vidare** under tavlan, bredvid väljaren Serie 1 / Serie 2 / Båda. Dialogen kan stängas med X och öppnas igen på samma sätt.
 - **Dialogen efter serie 1**: **Avsluta** går till huvudmenyn (omgången är sparad med en serie), **Nästa** startar serie 2.
 - **Dialogen efter serie 2**: **Avsluta** går till huvudmenyn, **Visa omgång** öppnar den sparade omgången. Efter serie 2 kan du växla mellan Serie 1, Serie 2 och Båda, både i skjutvyn och i den sparade omgången.
 - **Ångra sista pilen** finns kvar som länk i båda dialogerna. Ångra efter pil 30 tar bort pil 30. Är det serie 1 tas den sparade posten bort tills serien är full igen. Är det serie 2 sparas omgången med bara serie 1 tills serie 2 är full igen.
 - **Markeringar på tavlan** under skjutning: pilarna i aktuell rad (eller aktuellt varv) ligger kvar efter sista pilen. De tas bort först när fingret sätts ned för nästa rads första pil, så att man hinner jämföra med tavlan.
 - **Markeringarnas nummer**: i Räkna serie är numret pilens plats i raden (1–3). När en serie är klar och i sparade omgångar visas träffarna som prickar utan nummer (grön = serie 1, rosa = serie 2), eftersom 60 numrerade markeringar blir oläsliga.
 - **Markera en pil i sparad omgång**: tryck på en poängsiffra i tabellen. Pilen visas orange med dubbel ring och sitt nummer i serien (1–30), övriga träffar tonas ned, och under tavlan står serie, rad och pil. Tryck igen för att avmarkera. Tavlan ligger kvar överst när du scrollar i tabellerna.
-- **Live-siffran** visar poängen under placering och därefter senaste pilens poäng. Rutan färgas efter zonen.
+- **Siffror på tavlan** i Räkna serie: tavlan fyller hela bredden. Nere till vänster i ramytan visas poängen live under placering och därefter senaste pilens poäng, i en liten ruta färgad efter zonen. Nere till höger visas seriens summa, och i serie 2 totalen för båda serierna med serie 2:s summa ovanför (”S2”). Protokollets radhöjd anpassas efter skärmen så att tavlan blir så stor som möjligt utan scroll.
+- **Live-siffran** i Jämför pilar visas i högerkolumnen bredvid tavlan och färgas efter zonen.
 - **Statistik** (knapp på startsidan) gäller tävlingsomgångar:
   - *Snitt/omgång* = medelvärdet av omgångarnas totalpoäng.
   - *Snitt/pil* = all poäng delat med alla pilar.

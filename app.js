@@ -11,7 +11,7 @@ const ZOOM_WINDOW_FRACTION = 1 / 2;
 // Utsnittets bredd i zoomfönstret som andel av diametern (1/8 → 7,5 cm, alltså 4× förstoring).
 const ZOOM_VIEW_FRACTION = 1 / 8;
 
-const APP_VERSION = '1.1.0';
+const APP_VERSION = '1.2.0';
 const TARGET_DIAMETER = 60;        // cm
 const TARGET_RADIUS = 30;          // cm
 const X_RADIUS = 1.5;              // cm
@@ -759,6 +759,37 @@ function createBoard({ interactive = false, markerR = 1.3 } = {}) {
   return board;
 }
 
+const ZONE_FILL = { gold: '#F7E04B', red: '#DC4A4A', blue: '#4FADDE', black: '#231F20', white: '#FFFFFF', miss: '#C8C8C8' };
+
+// Senaste poängen i nedre vänstra hörnet och summorna i nedre högra, i ramytan utanför tavlan (cm).
+function boardCorners(board) {
+  const g = svgEl('g', { class: 'corners', 'pointer-events': 'none' });
+  const badge = svgEl('g', { visibility: 'hidden' });
+  const rect = svgEl('rect', { x: -32.6, y: 25.4, width: 7.2, height: 7.2, rx: 1, stroke: '#000', 'stroke-width': 0.3 });
+  const score = svgEl('text', { x: -29, y: 29, dy: '0.36em', 'text-anchor': 'middle', 'font-size': 5 });
+  badge.append(rect, score);
+  const extra = svgEl('text', { class: 'sum', x: 32.4, y: 24.6, 'text-anchor': 'end', 'font-size': 2.2 });
+  const label = svgEl('text', { class: 'sum', x: 32.4, y: 27, 'text-anchor': 'end', 'font-size': 2 });
+  const value = svgEl('text', { class: 'sum', x: 32.4, y: 32.3, 'text-anchor': 'end', 'font-size': 4.6 });
+  g.append(badge, extra, label, value);
+  board.svg.append(g);
+  return {
+    setScore(a) {
+      badge.setAttribute('visibility', a ? 'visible' : 'hidden');
+      if (!a) return;
+      const z = zoneOf(a);
+      rect.setAttribute('fill', ZONE_FILL[z]);
+      score.setAttribute('fill', z === 'black' ? '#fff' : '#000');
+      score.textContent = scoreLabel(a);
+    },
+    setSum(sum) {
+      label.textContent = sum.label;
+      value.textContent = sum.value;
+      extra.textContent = sum.extra || '';
+    }
+  };
+}
+
 function fitBoard(board) {
   const size = Math.floor(Math.min(board.wrap.clientWidth, board.wrap.clientHeight));
   if (size <= 0) return;
@@ -1159,15 +1190,15 @@ function viewShootRound() {
   let show = 'both'; // serien som visas när serien/omgången är klar: 0, 1 eller 'both'
 
   const undoBtn = barBtn('Ångra', onUndo);
-  const header = bar({ title: '', left: barBtn('Spara', onSave), right: undoBtn, onTitle: rename });
+  const backBtn = h('button', { class: 'bar-btn icon', 'aria-label': 'Tillbaka till startsidan', onclick: onBack }, '‹');
+  const header = bar({ title: '', left: [backBtn, barBtn('Spara', onSave)], right: undoBtn, onTitle: rename });
   const board = createBoard({ interactive: true, markerR: 1.3 });
-  const live = liveBox('Poäng');
-  const nextBtn = h('button', { class: 'btn primary side-next', onclick: openDoneDialog }, 'Gå vidare');
-  const seg = h('div', { class: 'seg vertical' });
-  const seriesBox = sideBox('Serie 1', '0');
-  const totalBox = sideBox('Totalt', '0', 'total');
+  const corners = boardCorners(board);
+  const nextBtn = h('button', { class: 'btn primary', onclick: openDoneDialog }, 'Gå vidare');
+  const seg = h('div', { class: 'seg' });
+  const doneBar = h('div', { class: 'done-bar' }, seg, nextBtn);
   // När serien är klar öppnar ett tryck på siffrorna dialogen.
-  const tableHost = h('div', { class: 'shoot-bottom', onclick: () => { if (isDone()) openDoneDialog(); } });
+  const tableHost = h('div', { class: 'shoot-bottom fixed', onclick: () => { if (isDone()) openDoneDialog(); } });
 
   const placement = attachPlacement(board, {
     canStart: () => {
@@ -1176,7 +1207,7 @@ function viewShootRound() {
         s.series[s.series.length - 1].arrows.length < ARROWS_PER_SERIES;
     },
     onStart: () => { placing = true; render(); },
-    onMove: (pt, sc) => live.set(sc),
+    onMove: (pt, sc) => corners.setScore(sc),
     onCommit: commit,
     onCancel: () => { placing = false; render(); }
   });
@@ -1200,10 +1231,7 @@ function viewShootRound() {
         : [])));
       seg.textContent = '';
       for (const [val, label] of [[0, 'Serie 1'], [1, 'Serie 2'], ['both', 'Båda']]) {
-        seg.append(h('button', {
-          class: show === val ? 'on' : '',
-          onclick: (e) => { e.stopPropagation(); show = val; render(); }
-        }, label));
+        seg.append(h('button', { class: show === val ? 'on' : '', onclick: () => { show = val; render(); } }, label));
       }
     } else {
       // Tavlan visar pilarna i aktuell rad. De försvinner när nästa rad påbörjas.
@@ -1212,15 +1240,13 @@ function viewShootRound() {
         .map((a, i) => ({ x: a.x, y: a.y, label: i + 1 })));
     }
 
-    live.el.hidden = done;
-    nextBtn.hidden = !done;
-    seg.hidden = !(done && two);
-    seriesBox.el.hidden = done && two;
-    seriesBox.label.textContent = `Serie ${si + 1}`;
-    seriesBox.num.textContent = sumScores(cur);
-    totalBox.el.hidden = !two;
-    totalBox.num.textContent = (prev || 0) + (two ? sumScores(cur) : 0);
-    if (!placing && !done) live.set(n ? cur[n - 1] : null);
+    doneBar.hidden = !done;
+    seg.hidden = !two;
+    const curSum = sumScores(cur);
+    corners.setSum(two
+      ? { label: 'Totalt', value: prev + curSum, extra: `S2 ${curSum}` }
+      : { label: 'Serie 1', value: curSum });
+    if (!placing) corners.setScore(n ? cur[n - 1] : null);
 
     const tsi = done && show === 0 ? 0 : si;
     tableHost.textContent = '';
@@ -1243,6 +1269,11 @@ function viewShootRound() {
     placement.cancel();
     await Store.undo();
     render();
+  }
+
+  function onBack() {
+    placement.cancel();
+    go(viewHome);
   }
 
   function onSave() {
@@ -1296,9 +1327,8 @@ function viewShootRound() {
   }
 
   const el = page(header, h('div', { style: 'display:contents' },
-    h('div', { class: 'shoot-top' }, board.el,
-      h('div', { class: 'side', onclick: (e) => { if (isDone() && e.target === e.currentTarget) openDoneDialog(); } },
-        live.el, nextBtn, seg, seriesBox.el, totalBox.el)),
+    h('div', { class: 'shoot-top' }, board.el),
+    doneBar,
     tableHost));
 
   return {

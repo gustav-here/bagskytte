@@ -1,7 +1,7 @@
 'use strict';
 
 // Byt CACHE_VERSION vid varje ändring av någon fil, annars får installerade appar inte uppdateringen.
-const CACHE_VERSION = 'bagskytte-v2';
+const CACHE_VERSION = 'bagskytte-v3';
 
 const ASSETS = [
   './',
