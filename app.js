@@ -11,7 +11,7 @@ const ZOOM_WINDOW_FRACTION = 1 / 2;
 // Utsnittets bredd i zoomfönstret som andel av diametern (1/8 → 7,5 cm, alltså 4× förstoring).
 const ZOOM_VIEW_FRACTION = 1 / 8;
 
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.3.0';
 const TARGET_DIAMETER = 60;        // cm
 const TARGET_RADIUS = 30;          // cm
 const X_RADIUS = 1.5;              // cm
@@ -182,6 +182,61 @@ function arrowShotsAcross(arrowId, comparisons) {
   return [...comparisons]
     .sort((a, b) => a.createdAt - b.createdAt)
     .flatMap((c) => c.shots.filter((s) => s.arrowId === arrowId));
+}
+
+// Genomsnittsträff (medelpunkt) för en lista träffar, eller null om listan är tom.
+function meanPoint(shots) {
+  if (!shots.length) return null;
+  return {
+    x: shots.reduce((t, s) => t + s.x, 0) / shots.length,
+    y: shots.reduce((t, s) => t + s.y, 0) / shots.length
+  };
+}
+
+// Täthet på ett rutnät över ytan (Gauss-kärna, sigma i cm) för heat map. Rad för rad, y nedåt.
+function heatGrid(points, cellsPerCm = 3, sigma = 1.5) {
+  const size = Math.round(2 * SURFACE_HALF * cellsPerCm);
+  const data = new Float32Array(size * size);
+  const reach = 3 * sigma;
+  const k = -1 / (2 * sigma * sigma);
+  for (const p of points) {
+    const cx = (p.x + SURFACE_HALF) * cellsPerCm;
+    const cy = (p.y + SURFACE_HALF) * cellsPerCm;
+    const r = reach * cellsPerCm;
+    const x0 = Math.max(0, Math.floor(cx - r)), x1 = Math.min(size - 1, Math.ceil(cx + r));
+    const y0 = Math.max(0, Math.floor(cy - r)), y1 = Math.min(size - 1, Math.ceil(cy + r));
+    for (let gy = y0; gy <= y1; gy++) {
+      const dy = (gy + 0.5 - cy) / cellsPerCm;
+      for (let gx = x0; gx <= x1; gx++) {
+        const dx = (gx + 0.5 - cx) / cellsPerCm;
+        const d2 = dx * dx + dy * dy;
+        if (d2 <= reach * reach) data[gy * size + gx] += Math.exp(d2 * k);
+      }
+    }
+  }
+  let max = 0;
+  for (let i = 0; i < data.length; i++) if (data[i] > max) max = data[i];
+  return { data, size, max };
+}
+
+// Alla pilar som har skott i någon jämförelse, med skotten samlade (äldst först).
+function comparisonArrowSummary(comparisons, allArrows) {
+  const map = new Map();
+  for (const c of [...comparisons].sort((a, b) => a.createdAt - b.createdAt)) {
+    for (const shot of c.shots) {
+      let e = map.get(shot.arrowId);
+      if (!e) {
+        const a = allArrows.find((x) => x.id === shot.arrowId);
+        e = { id: shot.arrowId, number: shot.arrowNumber, deleted: !!(a && a.deleted), shots: [], comps: new Set() };
+        map.set(shot.arrowId, e);
+      }
+      e.shots.push(shot);
+      e.comps.add(c.id);
+    }
+  }
+  return [...map.values()]
+    .sort((a, b) => a.number - b.number || a.deleted - b.deleted)
+    .map((e) => ({ id: e.id, number: e.number, deleted: e.deleted, shots: e.shots, comparisons: e.comps.size }));
 }
 
 function arrowColor(i) {
@@ -669,24 +724,31 @@ const $ = (sel) => document.querySelector(sel);
    Måltavla
    ========================================================================== */
 
+const TARGET_COLORS = { frame: FRAME_COLOR, zones: ['#FFFFFF', '#231F20', '#4FADDE', '#DC4A4A', '#F7E04B'], line: '#231F20', light: '#FFFFFF' };
+// Grå tavla under heat map, så att värmefärgerna syns.
+const GRAY_TARGET_COLORS = { frame: '#e4e4e4', zones: ['#FFFFFF', '#9E9E9E', '#D6D6D6', '#C2C2C2', '#EDEDED'], line: '#555555', light: '#FFFFFF' };
+
 // Ritar en World Archery 10-ringstavla (60 cm) i gruppen g. Enheter: cm.
-function buildTargetFace(g) {
+function buildTargetFace(g, colors = TARGET_COLORS) {
   g.textContent = '';
   g.append(svgEl('rect', {
-    x: -SURFACE_HALF, y: -SURFACE_HALF, width: 2 * SURFACE_HALF, height: 2 * SURFACE_HALF, fill: FRAME_COLOR
+    x: -SURFACE_HALF, y: -SURFACE_HALF, width: 2 * SURFACE_HALF, height: 2 * SURFACE_HALF, fill: colors.frame
   }));
-  const zones = [[30, '#FFFFFF'], [24, '#231F20'], [18, '#4FADDE'], [12, '#DC4A4A'], [6, '#F7E04B']];
-  for (const [r, fill] of zones) g.append(svgEl('circle', { r, fill }));
+  [30, 24, 18, 12, 6].forEach((r, i) => g.append(svgEl('circle', { r, fill: colors.zones[i] })));
   // Linjer 2 mm breda, ritade helt innanför den högre zonen.
   const line = (r, stroke) => svgEl('circle', { r: r - 0.1, fill: 'none', stroke, 'stroke-width': 0.2 });
-  for (const r of [1.5, 3, 6, 9, 12, 15, 27, 30]) g.append(line(r, '#231F20'));
-  g.append(line(21, '#FFFFFF'));
-  g.append(svgEl('path', { d: 'M-0.2 0H0.2M0 -0.2V0.2', stroke: '#231F20', 'stroke-width': 0.1, fill: 'none' }));
+  for (const r of [1.5, 3, 6, 9, 12, 15, 27, 30]) g.append(line(r, colors.line));
+  g.append(line(21, colors.light));
+  g.append(svgEl('path', { d: 'M-0.2 0H0.2M0 -0.2V0.2', stroke: colors.line, 'stroke-width': 0.1, fill: 'none' }));
 }
 
 function renderMarkers(g, list, r) {
   g.textContent = '';
   for (const m of list) {
+    if (m.avg) {
+      g.append(avgMarker(m.x, m.y));
+      continue;
+    }
     const rr = m.r || r;
     const grp = svgEl('g', { transform: `translate(${m.x} ${m.y})` });
     if (m.dim) grp.setAttribute('opacity', '0.35');
@@ -711,6 +773,18 @@ function renderMarkers(g, list, r) {
     }
     g.append(grp);
   }
+}
+
+// Tydlig markering av genomsnittsträffen: hårkors med ring, vit kant och cyan mittpunkt.
+function avgMarker(x, y) {
+  const grp = svgEl('g', { transform: `translate(${x} ${y})`, class: 'avg-marker' });
+  const arm = 3.2;
+  for (const [stroke, w] of [['#fff', 1], ['#000', 0.45]]) {
+    grp.append(svgEl('path', { d: `M${-arm} 0H${arm}M0 ${-arm}V${arm}`, stroke, 'stroke-width': w, 'stroke-linecap': 'round', fill: 'none' }));
+    grp.append(svgEl('circle', { r: 1.6, fill: 'none', stroke, 'stroke-width': w }));
+  }
+  grp.append(svgEl('circle', { r: 0.55, fill: '#00e5ff', stroke: '#000', 'stroke-width': 0.2 }));
+  return grp;
 }
 
 let boardSeq = 0;
@@ -757,6 +831,96 @@ function createBoard({ interactive = false, markerR = 1.3 } = {}) {
     }
   }
   return board;
+}
+
+// Färger för heat map: från genomskinligt gult till mörkrött (en riktning, ingen regnbåge).
+const HEAT_STOPS = [
+  [0, 255, 230, 120, 0],
+  [0.15, 255, 210, 60, 0.45],
+  [0.4, 255, 140, 0, 0.7],
+  [0.7, 225, 45, 0, 0.82],
+  [1, 140, 0, 30, 0.9]
+];
+
+function heatColor(v) {
+  for (let i = 1; i < HEAT_STOPS.length; i++) {
+    const [p1, ...c1] = HEAT_STOPS[i];
+    if (v <= p1) {
+      const [p0, ...c0] = HEAT_STOPS[i - 1];
+      const t = (v - p0) / (p1 - p0);
+      return c0.map((c, k) => c + (c1[k] - c) * t);
+    }
+  }
+  return HEAT_STOPS[HEAT_STOPS.length - 1].slice(1);
+}
+
+function heatImageHref(points) {
+  const { data, size, max } = heatGrid(points);
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  if (max > 0) {
+    for (let i = 0; i < data.length; i++) {
+      const v = data[i] / max;
+      if (v < 0.02) continue;
+      const [r, g, b, a] = heatColor(v);
+      img.data[i * 4] = r;
+      img.data[i * 4 + 1] = g;
+      img.data[i * 4 + 2] = b;
+      img.data[i * 4 + 3] = Math.round(a * 255);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return canvas.toDataURL('image/png');
+}
+
+function meanPointText(m, n) {
+  if (!m) return 'Inga träffar att visa.';
+  const cm = (v) => Math.abs(v).toFixed(1).replace('.', ',');
+  const side = Math.abs(m.x) < 0.05 ? 'mitt i sidled' : `${cm(m.x)} cm ${m.x > 0 ? 'höger' : 'vänster'}`;
+  const height = Math.abs(m.y) < 0.05 ? 'mitt i höjdled' : `${cm(m.y)} cm ${m.y < 0 ? 'upp' : 'ned'}`;
+  return `Genomsnittsträff (${n} ${n === 1 ? 'pil' : 'pilar'}): ${side}, ${height} – ${scoreLabel(scoreAt(m.x, m.y))}`;
+}
+
+// Tavla för analys: växlar mellan träffar och heat map och markerar alltid genomsnittsträffen.
+// set({ shots, markers }): shots används till heat map och genomsnitt, markers visas i läget Träffar.
+function analysisBoard({ markerR = 0.75, mode = 'hits' } = {}) {
+  const board = createBoard({ markerR });
+  const gray = useEl('#target-face-gray');
+  const heat = svgEl('image', {
+    x: -SURFACE_HALF, y: -SURFACE_HALF, width: 2 * SURFACE_HALF, height: 2 * SURFACE_HALF, preserveAspectRatio: 'none'
+  });
+  board.svg.insertBefore(gray, board.markers);
+  board.svg.insertBefore(heat, board.markers);
+  const seg = h('div', { class: 'seg' });
+  const avgLine = h('p', { class: 'board-caption avg' });
+  let data = { shots: [], markers: [] };
+
+  function render() {
+    seg.textContent = '';
+    for (const [val, label] of [['hits', 'Träffar'], ['heat', 'Heat map']]) {
+      seg.append(h('button', { class: mode === val ? 'on' : '', onclick: () => { mode = val; render(); } }, label));
+    }
+    const isHeat = mode === 'heat';
+    gray.setAttribute('visibility', isHeat ? 'visible' : 'hidden');
+    heat.setAttribute('visibility', isHeat && data.shots.length ? 'visible' : 'hidden');
+    if (isHeat && data.shots.length) {
+      const href = heatImageHref(data.shots);
+      heat.setAttribute('href', href);
+      heat.setAttributeNS(XLINK_NS, 'xlink:href', href);
+    }
+    const m = meanPoint(data.shots);
+    board.setMarkers([...(isHeat ? [] : data.markers), ...(m ? [{ x: m.x, y: m.y, avg: true }] : [])]);
+    avgLine.textContent = meanPointText(m, data.shots.length);
+  }
+
+  render();
+  return {
+    board, seg, avgLine,
+    set(d) { data = d; render(); },
+    setMode(m) { if (mode !== m) { mode = m; render(); } }
+  };
 }
 
 const ZONE_FILL = { gold: '#F7E04B', red: '#DC4A4A', blue: '#4FADDE', black: '#231F20', white: '#FFFFFF', miss: '#C8C8C8' };
@@ -1075,12 +1239,18 @@ function viewHome() {
   if (st.activeSession) content.append(resumeCard(st.activeSession, () => go(viewHome)));
 
   content.append(h('div', { class: 'big-buttons' },
-    h('button', {
-      class: 'btn big primary',
-      onclick: async () => { if (await ensureNoSession()) go(viewRoundSetup); }
-    }, 'Räkna serie'),
-    h('button', { class: 'btn big', onclick: () => go(viewCompareHome) }, 'Jämför pilar'),
-    h('button', { class: 'btn wide', onclick: () => go(viewRoundStats) }, 'Statistik')));
+    h('div', { class: 'btn-group' },
+      h('button', {
+        class: 'btn big primary',
+        onclick: async () => { if (await ensureNoSession()) go(viewRoundSetup); }
+      }, 'Räkna serie'),
+      h('button', { class: 'btn wide', 'aria-label': 'Statistik för Räkna serie', onclick: () => go(viewRoundStats) }, 'Statistik')),
+    h('div', { class: 'btn-group' },
+      h('button', { class: 'btn big', onclick: () => go(viewCompareHome) }, 'Jämför pilar'),
+      h('button', {
+        class: 'btn wide', 'aria-label': 'Statistik för Jämför pilar',
+        onclick: () => go(viewCompareStats, () => go(viewHome))
+      }, 'Statistik'))));
 
   content.append(h('h2', { class: 'section' }, 'Sparade tävlingsomgångar'));
   const rounds = [...st.rounds].sort((a, b) => b.createdAt - a.createdAt);
@@ -1357,7 +1527,7 @@ function viewRoundDetail(id, back) {
   });
   nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') nameInput.blur(); });
 
-  const board = createBoard({ markerR: 0.75 });
+  const ab = analysisBoard({ markerR: 0.75 });
   const caption = h('p', { class: 'board-caption' });
   const seg = h('div', { class: 'seg' });
   const tablesHost = h('div');
@@ -1365,6 +1535,7 @@ function viewRoundDetail(id, back) {
   function select(si, i) {
     sel = sel && sel.si === si && sel.i === i ? null : { si, i };
     if (sel && show !== 'both' && show !== si) show = 'both';
+    if (sel) ab.setMode('hits');
     render();
   }
 
@@ -1385,10 +1556,12 @@ function viewRoundDetail(id, back) {
     seg.hidden = r.series.length < 2;
 
     const markers = [];
+    const shots = [];
     let picked = null;
     r.series.forEach((s, si) => {
       if (show !== 'both' && show !== si) return;
       s.arrows.forEach((a, i) => {
+        shots.push(a);
         if (sel && sel.si === si && sel.i === i) {
           picked = { x: a.x, y: a.y, color: HIGHLIGHT_COLOR, label: i + 1, r: 1.5, highlight: true };
         } else {
@@ -1397,7 +1570,7 @@ function viewRoundDetail(id, back) {
       });
     });
     if (picked) markers.push(picked); // överst
-    board.setMarkers(markers);
+    ab.set({ shots, markers });
 
     if (sel) {
       const a = r.series[sel.si].arrows[sel.i];
@@ -1423,7 +1596,8 @@ function viewRoundDetail(id, back) {
     h('div', { class: 'summary' },
       sideBox('Poäng', sum.score).el, sideBox('10:or', sum.tens).el, sideBox('X', sum.xs).el),
     seg,
-    h('div', { class: 'sticky-board' }, board.el, caption),
+    ab.seg,
+    h('div', { class: 'sticky-board' }, ab.board.el, ab.avgLine, caption),
     tablesHost,
     h('p', null),
     h('button', {
@@ -1518,7 +1692,7 @@ function lineChart(points, { min = 0, max = Infinity, format = String } = {}) {
 function viewRoundStats() {
   const o = roundsOverview(Store.state.rounds);
   const content = h('main', { class: 'content' });
-  const bar0 = bar({ title: 'Statistik', left: barBtn('‹ Hem', () => go(viewHome)) });
+  const bar0 = bar({ title: 'Statistik – serier', left: barBtn('‹ Hem', () => go(viewHome)) });
   if (!o.count) {
     content.append(h('p', { class: 'empty' }, 'Inga sparade tävlingsomgångar ännu. Statistiken visas när du har sparat en omgång.'));
     return { el: page(bar0, content) };
@@ -1552,9 +1726,15 @@ function viewRoundStats() {
   }
   renderChart();
 
+  const allArrows = Store.state.rounds.flatMap((r) => r.series.flatMap((x) => x.arrows));
+  const ab = analysisBoard({ markerR: 0.55, mode: 'heat' });
+  ab.set({ shots: allArrows, markers: allArrows.map((a) => ({ x: a.x, y: a.y, color: MARKER_COLOR })) });
+
   content.append(
     h('h2', { class: 'section' }, 'Poäng för alla omgångar'),
     seg, chartHost,
+    h('h2', { class: 'section' }, 'Träffbild – alla omgångar'),
+    ab.seg, ab.board.el, ab.avgLine,
     h('h2', { class: 'section' }, 'Per omgång'),
     h('div', { class: 'list' }, [...o.rounds].reverse().map((r) =>
       h('button', { class: 'list-item', onclick: () => go(viewRoundDetail, r.id, () => go(viewRoundStats)) },
@@ -1578,7 +1758,7 @@ function viewCompareHome() {
 
   content.append(h('div', { class: 'big-buttons' },
     h('button', { class: 'btn big primary', onclick: () => go(viewNewComparison) }, 'Ny jämförelse'),
-    h('button', { class: 'btn wide', onclick: () => go(viewArrowStats, null) }, 'Statistik per pil')));
+    h('button', { class: 'btn wide', onclick: () => go(viewCompareStats, () => go(viewCompareHome)) }, 'Statistik')));
 
   content.append(h('h2', { class: 'section' }, 'Sparade jämförelser'));
   const comps = [...st.comparisons].sort((a, b) => b.createdAt - a.createdAt);
@@ -1810,9 +1990,19 @@ function viewShootComparison() {
   };
 }
 
-function statsCard(title, color, st, extra) {
-  return h('section', { class: 'card' },
-    h('div', { class: 'stat-head' }, color ? h('span', { class: 'dot', style: `background:${color}` }) : null, title),
+// Kort med statistik för en pil. Med opts.onclick blir kortet tryckbart och visar pilen i tavlan.
+function statsCard(title, color, st, extra, opts = {}) {
+  const tap = !!opts.onclick;
+  return h('section', {
+    class: 'card' + (tap ? ' tappable' : '') + (opts.selected ? ' selected' : ''),
+    onclick: opts.onclick || null,
+    role: tap ? 'button' : null,
+    'aria-pressed': tap ? String(!!opts.selected) : null
+  },
+    h('div', { class: 'stat-head' },
+      color ? h('span', { class: 'dot', style: `background:${color}` }) : null,
+      h('span', null, title),
+      tap ? h('span', { class: 'card-hint' }, opts.selected ? 'Visas i tavlan' : 'Visa i tavlan') : null),
     extra ? h('p', { class: 'meta-line' }, extra) : null,
     h('div', { class: 'stat-grid' }, kv('Skott', st.count), kv('Snitt', fmtAvg(st.avg)), kv('10:or', st.tens), kv('X', st.xs)),
     st.shots.length
@@ -1820,38 +2010,63 @@ function statsCard(title, color, st, extra) {
       : h('p', { class: 'empty' }, 'Inga skott.'));
 }
 
-function viewComparisonDetail(id, back) {
-  const c = Store.state.comparisons.find((x) => x.id === id);
-  if (!c) return { el: h('div'), mounted: back };
-  const stats = comparisonStats(c, Store.state.arrows);
-  const varv = c.shots.reduce((m, s) => Math.max(m, s.round), 0);
+// Gemensam del för sparad jämförelse och statistik: filterchips, analystavla och tryckbara pilkort.
+// arrows: [{ id, title, color, shots, extra }]
+function arrowAnalysis(arrows, markerR) {
   let filter = null;
-
-  const board = createBoard({ markerR: 1.1 });
+  const ab = analysisBoard({ markerR });
   const chips = h('div', { class: 'chips' });
+  const cards = h('div', { class: 'cards' });
+  const colorOf = new Map(arrows.map((a) => [a.id, a.color]));
+  const allShots = arrows.flatMap((a) => a.shots);
 
   function render() {
     chips.textContent = '';
     chips.append(h('button', { class: 'chip' + (filter === null ? ' on' : ''), onclick: () => { filter = null; render(); } }, 'Alla'));
-    for (const st of stats) {
+    for (const a of arrows) {
       chips.append(h('button', {
-        class: 'chip' + (filter === st.arrowId ? ' on' : ''),
-        onclick: () => { filter = st.arrowId; render(); }
-      }, h('span', { class: 'dot', style: `background:${st.color}` }), `Pil ${st.number}`));
+        class: 'chip' + (filter === a.id ? ' on' : ''),
+        onclick: () => { filter = a.id; render(); }
+      }, h('span', { class: 'dot', style: `background:${a.color}` }), a.title));
     }
-    board.setMarkers(c.shots.filter((s) => filter === null || s.arrowId === filter).map((s) => {
-      const st = stats.find((x) => x.arrowId === s.arrowId);
-      return { x: s.x, y: s.y, label: s.arrowNumber, color: st ? st.color : MARKER_COLOR };
-    }));
+    const shots = filter === null ? allShots : allShots.filter((s) => s.arrowId === filter);
+    ab.set({
+      shots,
+      markers: shots.map((s) => ({ x: s.x, y: s.y, label: s.arrowNumber, color: colorOf.get(s.arrowId) || MARKER_COLOR }))
+    });
+    cards.textContent = '';
+    for (const a of arrows) {
+      cards.append(statsCard(a.title, a.color, { ...shotStats(a.shots), shots: a.shots }, a.extra, {
+        selected: filter === a.id,
+        onclick: () => { filter = filter === a.id ? null : a.id; render(); }
+      }));
+    }
   }
+
+  render();
+  return {
+    top: [chips, ab.seg, h('div', { class: 'sticky-board' }, ab.board.el, ab.avgLine)],
+    cards
+  };
+}
+
+function viewComparisonDetail(id, back) {
+  const c = Store.state.comparisons.find((x) => x.id === id);
+  if (!c) return { el: h('div'), mounted: back };
+  const varv = c.shots.reduce((m, s) => Math.max(m, s.round), 0);
+  const arrows = comparisonStats(c, Store.state.arrows).map((st) => ({
+    id: st.arrowId,
+    title: `Pil ${st.number}`,
+    color: st.color,
+    shots: c.shots.filter((s) => s.arrowId === st.arrowId)
+  }));
+  const an = arrowAnalysis(arrows, 1.1);
 
   const content = h('main', { class: 'content' },
     h('p', { class: 'meta-line', style: 'margin-top:0' },
       `${fmtDateTime(c.createdAt)} · ${c.shots.length} skott · ${varv} varv`),
-    chips,
-    board.el,
-    stats.map((st) => statsCard(`Pil ${st.number}`, st.color,
-      { ...st, shots: c.shots.filter((s) => s.arrowId === st.arrowId) })),
+    an.top,
+    an.cards,
     h('p', null),
     h('button', {
       class: 'btn danger-outline wide',
@@ -1864,34 +2079,40 @@ function viewComparisonDetail(id, back) {
       }
     }, 'Radera jämförelse'));
 
-  return {
-    el: page(bar({ title: 'Jämförelse', left: barBtn('‹ Tillbaka', back) }), content),
-    mounted: render
-  };
+  return { el: page(bar({ title: 'Jämförelse', left: barBtn('‹ Tillbaka', back) }), content) };
 }
 
-function viewArrowStats(selectedId) {
-  const arrows = Store.activeArrows();
+// All sparad statistik från Jämför pilar på en gång: alla pilar och alla jämförelser sammanräknade.
+function viewCompareStats(back) {
+  const comps = Store.state.comparisons;
+  const bar0 = bar({ title: 'Statistik – pilar', left: barBtn('‹ Tillbaka', back) });
   const content = h('main', { class: 'content' });
-  content.append(arrows.length
-    ? h('div', { class: 'chips' }, arrows.map((a) =>
-      h('button', { class: 'chip' + (a.id === selectedId ? ' on' : ''), onclick: () => go(viewArrowStats, a.id) }, `Pil ${a.number}`)))
-    : h('p', { class: 'empty' }, 'Inga pilar i registret ännu.'));
-
-  const a = arrows.find((x) => x.id === selectedId);
-  if (a) {
-    const shots = arrowShotsAcross(a.id, Store.state.comparisons);
-    const nComps = Store.state.comparisons.filter((c) => c.shots.some((s) => s.arrowId === a.id)).length;
-    const board = createBoard({ markerR: 0.8 });
-    board.setMarkers(shots.map((s) => ({ x: s.x, y: s.y, color: MARKER_COLOR })));
-    content.append(
-      statsCard(`Pil ${a.number}`, null, { ...shotStats(shots), shots },
-        `Från ${nComps} ${nComps === 1 ? 'jämförelse' : 'jämförelser'}`),
-      board.el);
-  } else if (arrows.length) {
-    content.append(h('p', { class: 'hint' }, 'Välj en pil för att se dess statistik och alla träffar.'));
+  const summary = comparisonArrowSummary(comps, Store.state.arrows);
+  if (!summary.length) {
+    content.append(h('p', { class: 'empty' }, 'Inga sparade jämförelser ännu. Statistiken visas när du har sparat en jämförelse.'));
+    return { el: page(bar0, content) };
   }
-  return { el: page(bar({ title: 'Statistik per pil', left: barBtn('‹ Tillbaka', () => go(viewCompareHome)) }), content) };
+  const arrows = summary.map((a, i) => ({
+    id: a.id,
+    title: `Pil ${a.number}${a.deleted ? ' (borttagen)' : ''}`,
+    color: arrowColor(i),
+    shots: a.shots,
+    extra: `Från ${a.comparisons} ${a.comparisons === 1 ? 'jämförelse' : 'jämförelser'}`
+  }));
+  const tot = shotStats(arrows.flatMap((a) => a.shots));
+  const an = arrowAnalysis(arrows, 0.9);
+
+  content.append(
+    h('div', { class: 'stat-grid three' },
+      kv('Jämförelser', comps.length), kv('Skott', tot.count), kv('Snitt/pil', fmtAvg(tot.avg)),
+      kv('Pilar', arrows.length), kv('10:or', tot.tens), kv('X', tot.xs)),
+    h('h2', { class: 'section' }, 'Träffbild – alla jämförelser'),
+    ...an.top,
+    h('h2', { class: 'section' }, 'Per pil'),
+    h('p', { class: 'hint' }, 'Tryck på ett kort för att visa pilens träffar, heat map och genomsnittsträff i tavlan.'),
+    an.cards);
+
+  return { el: page(bar0, content) };
 }
 
 /* ==========================================================================
@@ -1905,8 +2126,18 @@ function installGestureGuards() {
   document.addEventListener('touchmove', (e) => { if (e.touches.length > 1) e.preventDefault(); }, { passive: false });
 }
 
+function ensureFaceGroup(id) {
+  let g = document.getElementById(id);
+  if (!g) {
+    g = svgEl('g', { id });
+    document.querySelector('svg defs').append(g);
+  }
+  return g;
+}
+
 async function boot() {
   buildTargetFace(document.getElementById('target-face'));
+  buildTargetFace(ensureFaceGroup('target-face-gray'), GRAY_TARGET_COLORS);
   installGestureGuards();
   window.addEventListener('unhandledrejection', (e) => {
     console.error(e.reason);
@@ -1928,7 +2159,8 @@ async function boot() {
 window.Bage = {
   ZOOM_WINDOW_FRACTION, ZOOM_VIEW_FRACTION, ARROWS_PER_SERIES, MAX_SET_SIZE,
   scoreForDistance, scoreAt, scoreLabel, zoneOf, makeArrow, seriesTable, seriesScore, shotStats, roundSummary,
-  roundsOverview, niceTicks, seriesGrid,
+  roundsOverview, niceTicks, seriesGrid, meanPoint, heatGrid, heatColor, comparisonArrowSummary,
+  GRAY_TARGET_COLORS, ensureFaceGroup, analysisBoard,
   nextArrowIndex, varvOf, comparisonArrows, comparisonStats, arrowShotsAcross, parseSetNumbers, validateBackup,
   defaultRoundName, buildTargetFace, DB, Store, go, viewHome
 };

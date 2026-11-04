@@ -170,7 +170,8 @@ h2.section {
 .btn.wide { width: 100%; }
 .btn.small { min-height: 44px; padding: 0 12px; font-size: 15px; }
 
-.big-buttons { display: flex; flex-direction: column; gap: 12px; }
+.big-buttons { display: flex; flex-direction: column; gap: 20px; }
+.btn-group { display: flex; flex-direction: column; gap: 8px; }
 .row-buttons { display: flex; gap: 10px; flex-wrap: wrap; }
 .row-buttons .btn { flex: 1 1 140px; }
 
@@ -531,6 +532,16 @@ button.list-item:active { background: var(--soft); }
 }
 .sticky-board .board.static { max-width: min(560px, 46vh); }
 .board-caption { text-align: center; font-weight: 700; font-size: 15px; margin: 6px 0 0; min-height: 20px; }
+.board-caption.avg { font-size: 14px; }
+
+/* ---------- Pilkort som visar pilen i tavlan ---------- */
+
+.cards { display: flex; flex-direction: column; gap: 10px; }
+.card.tappable { cursor: pointer; }
+.card.tappable:active { background: var(--soft); }
+.card.selected { border-color: var(--active); box-shadow: 0 0 0 3px var(--active); }
+.stat-head .card-hint { margin-left: auto; font-size: 13px; font-weight: 700; color: var(--primary); }
+.card.selected .card-hint { color: var(--active); }
 
 /* ---------- Statistik ---------- */
 

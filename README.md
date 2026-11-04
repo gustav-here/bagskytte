@@ -3,7 +3,7 @@
 En mobilanpassad webbapp (PWA) på svenska för bågskytteträning på iPhone. Appen läggs på hemskärmen, fungerar helt offline och kräver ingen App Store.
 
 - **Räkna serie**: registrera tävlingsomgångar med 1 eller 2 serier à 30 pilar, med protokoll (Poäng, Serie, Totalt).
-- **Statistik**: snittpoäng per omgång och per pil, totaler och ett diagram över alla sparade omgångar.
+- **Statistik**: egen statistik för Räkna serie och för Jämför pilar, med heat map och genomsnittsträff.
 - **Jämför pilar**: skjut ett set numrerade pilar i varv och jämför statistik per pil.
 
 All data sparas lokalt på telefonen i IndexedDB. Den sparas efter varje pil.
@@ -77,6 +77,7 @@ Testerna täcker:
 - Statistik per jämförelse och per pil över flera jämförelser, avslut mitt i varv och att tomma jämförelser inte sparas.
 - Export och import fram och tillbaka, ersättning av data och avvisning av felaktiga filer.
 - Statistiköversikten (snitt per omgång, snitt per pil, totaler) och diagrammets skalsteg.
+- Genomsnittsträff, heat map (täthet, symmetri, färgskala), grå tavla och sammanställning per pil över alla jämförelser (även borttagna pilar).
 - Tavlans zoner, linjer och kors samt zoomkonstanterna (4×).
 
 ## Val och tolkningar
@@ -96,7 +97,8 @@ Där specifikationen var oklar har jag gjort följande val:
 - **Markera en pil i sparad omgång**: tryck på en poängsiffra i tabellen. Pilen visas orange med dubbel ring och sitt nummer i serien (1–30), övriga träffar tonas ned, och under tavlan står serie, rad och pil. Tryck igen för att avmarkera. Tavlan ligger kvar överst när du scrollar i tabellerna.
 - **Siffror på tavlan** i Räkna serie: tavlan fyller hela bredden. Nere till vänster i ramytan visas poängen live under placering och därefter senaste pilens poäng, i en liten ruta färgad efter zonen. Nere till höger visas seriens summa, och i serie 2 totalen för båda serierna med serie 2:s summa ovanför (”S2”). Protokollets radhöjd anpassas efter skärmen så att tavlan blir så stor som möjligt utan scroll.
 - **Live-siffran** i Jämför pilar visas i högerkolumnen bredvid tavlan och färgas efter zonen.
-- **Statistik** (knapp på startsidan) gäller tävlingsomgångar:
+- **Två statistikknappar** på startsidan: en under Räkna serie och en under Jämför pilar. Knappen Statistik på sidan Jämför pilar öppnar samma vy som den senare.
+- **Statistik för Räkna serie**:
   - *Snitt/omgång* = medelvärdet av omgångarnas totalpoäng.
   - *Snitt/pil* = all poäng delat med alla pilar.
   - *Totalt* = summan av all poäng.
@@ -105,7 +107,22 @@ Där specifikationen var oklar har jag gjort följande val:
 - **Avsluta** i Jämför pilar och **Släng pågående** kräver bekräftelse, så att ett feltryck inte avslutar eller slänger.
 - **Ny omgång eller jämförelse när en annan pågår**: appen frågar om den pågående ska slängas. Det finns bara en pågående session åt gången.
 - **Pilnummer** är heltal 1–999.
-- **Borttagna pilar** finns kvar i databasen med `deleted: true`, så att sparade jämförelser kan visa deras nummer. De visas inte i pilregistret eller i Statistik per pil.
+- **Statistik för Jämför pilar** visar all sparad statistik på en gång:
+  - totaler för alla jämförelser
+  - en tavla med alla skott, där varje pil har sin färg och sitt nummer
+  - ett kort per pil med alla poäng, antal skott, snitt, 10:or och X.
+
+  Tryck på ett kort (eller en filterknapp) så visar tavlan bara den pilens träffar. Tryck på kortet igen för att visa alla. Samma sak fungerar i en sparad jämförelse.
+- **Borttagna pilar** finns kvar i databasen med `deleted: true`, så att sparade jämförelser kan visa deras nummer. De visas inte i pilregistret. I statistiken för Jämför pilar visas de som ”Pil 2 (borttagen)”, eftersom de har sparade skott.
+- **Heat map och genomsnittsträff** finns
+  - för en sparad omgång (vald serie eller båda)
+  - för alla tävlingsomgångar sammanräknat (Statistik för Räkna serie, visas som heat map från början)
+  - för en sparad jämförelse
+  - för alla jämförelser sammanräknat.
+
+  Ovanför tavlan växlar du mellan **Träffar** och **Heat map**. Den visar alla träffar eller den valda pilen. Om du markerar en pil via tabellen i en sparad omgång växlar tavlan till Träffar.
+  - **Heat map**: tätheten räknas med en Gauss-kärna (σ = 1,5 cm) och visas från genomskinligt gult till mörkrött ovanpå en grå tavla, så att färgerna syns.
+  - **Genomsnittsträffen** är medelpunkten av alla träffar som visas, även missar (de ligger kvar där de sattes). Den markeras med ett hårkors med ring och cyan mittpunkt. Under tavlan står hur långt den ligger från mitten i sidled och höjdled, och vilken poäng den motsvarar, t.ex. ”2,4 cm höger, 1,5 cm upp – 10”.
 - **Radera jämförelse**: specifikationen nämner det inte, men det finns en knapp med bekräftelse i den sparade jämförelsen.
 - **Namnbyte** kan göras både i den sparade omgången och under skjutning (tryck på namnet i toppfältet).
 - **Mittkorset** ritas svart.

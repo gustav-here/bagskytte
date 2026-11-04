@@ -446,6 +446,50 @@
       eq(B.niceTicks(200, 200, 4), [199, 199.5, 200, 200.5, 201]);
     });
 
+    section('Heat map och genomsnittsträff');
+    await test('Genomsnittsträff är medelpunkten av träffarna', () => {
+      eq(B.meanPoint([]), null);
+      eq(B.meanPoint([{ x: 1, y: -2 }, { x: 3, y: 4 }]), { x: 2, y: 1 });
+    });
+    await test('Heat map: tätast där träffarna ligger, symmetriskt kring en ensam träff', () => {
+      const g = B.heatGrid([{ x: 0, y: 0 }], 3, 1.5);
+      eq(g.size, 198);
+      const c = g.size / 2;
+      const at = (gx, gy) => g.data[gy * g.size + gx];
+      ok(Math.abs(at(c, c) - g.max) < 1e-6 || Math.abs(at(c - 1, c - 1) - g.max) < 1e-6, 'max i mitten');
+      ok(Math.abs(at(c + 5, c) - at(c - 6, c)) < 1e-6, 'symmetri i sidled');
+      eq(at(0, 0), 0, 'inget långt bort');
+      const two = B.heatGrid([{ x: 10, y: 0 }, { x: 10, y: 0 }, { x: -10, y: 0 }], 3, 1.5);
+      const val = (x) => two.data[Math.floor((0 + 33) * 3) * two.size + Math.floor((x + 33) * 3)];
+      ok(val(10) > val(-10) * 1.9, 'två träffar ger dubbel täthet');
+      eq(B.heatGrid([], 3, 1.5).max, 0);
+    });
+    await test('Heat map-färger går från genomskinligt till mörkrött', () => {
+      eq(B.heatColor(0)[3], 0);
+      ok(B.heatColor(1)[3] > 0.85);
+      ok(B.heatColor(0.5)[1] < B.heatColor(0.1)[1], 'mörkare med högre täthet');
+    });
+    await test('Statistik för Jämför pilar samlar alla jämförelser per pil, även borttagna pilar', () => {
+      const shot = (arrowId, arrowNumber, score) => ({ arrowId, arrowNumber, round: 1, ...arrowOf(score) });
+      const comps = [
+        { id: 'c2', createdAt: 2, arrowIds: ['a', 'b'], shots: [shot('a', 3, 9), shot('b', 1, 'X')] },
+        { id: 'c1', createdAt: 1, arrowIds: ['a', 'old'], shots: [shot('a', 3, 10), shot('old', 1, 5)] }
+      ];
+      const arrows = [{ id: 'a', number: 3, deleted: false }, { id: 'b', number: 1, deleted: false }, { id: 'old', number: 1, deleted: true }];
+      const sum = B.comparisonArrowSummary(comps, arrows);
+      eq(sum.map((x) => [x.id, x.number, x.deleted, x.comparisons, x.shots.map(B.scoreLabel)]), [
+        ['b', 1, false, 1, ['X']],
+        ['old', 1, true, 1, ['5']],
+        ['a', 3, false, 2, ['10', '9']]
+      ]);
+    });
+    await test('Grå tavla för heat map har samma geometri', () => {
+      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+      B.buildTargetFace(g, B.GRAY_TARGET_COLORS);
+      eq([...g.querySelectorAll('circle')].length, 5 + 9);
+      ok([...g.querySelectorAll('circle')].every((c) => !['#DC4A4A', '#4FADDE', '#F7E04B'].includes(c.getAttribute('fill'))));
+    });
+
     // ---------------------------------------------------------------
     section('Export och import');
     await test('Export → radera allt → import ger samma data', async () => {
